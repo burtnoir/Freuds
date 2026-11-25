@@ -1,5 +1,6 @@
 using Freuds.Core;
 using Freuds.Core.Events;
+using Freuds.Core.Levels;
 using Freuds.Core.Model;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
@@ -18,12 +19,20 @@ public sealed class GameView
     private readonly int _viewH;
     private readonly SpritePool _sprites = new();
 
+    private readonly LevelData? _level;
+    private readonly Texture2D?[] _tilesets;
+
     private float _camCenterX;
     private float _camY;
     private bool _camReady;
 
-    public GameView(EventManager events, World world, Texture2D pixel, int viewWidth, int viewHeight)
+    /// <param name="level">Optional imported level, used for background art and unit markers.</param>
+    /// <param name="tilesets">One texture per tileset in the level. An entry may be null if its image is missing.</param>
+    public GameView(EventManager events, World world, Texture2D pixel, int viewWidth, int viewHeight,
+        LevelData? level = null, Texture2D?[]? tilesets = null)
     {
+        _level = level;
+        _tilesets = tilesets ?? Array.Empty<Texture2D?>();
         _world = world;
         _pixel = pixel;
         _viewW = viewWidth;
@@ -74,7 +83,12 @@ public sealed class GameView
 
     public void Draw(SpriteBatch batch)
     {
-        DrawTerrain(batch);
+        DrawBackground(batch);
+        if (!HasArt)
+        {
+            DrawTerrain(batch);
+        }
+        DrawUnitMarkers(batch);
 
         for (int i = 0; i < _sprites.Count; i++)
         {
@@ -91,6 +105,94 @@ public sealed class GameView
         }
 
         DrawHud(batch);
+    }
+
+    // With imported art the picture shows the ground, so the placeholder terrain blocks are only drawn without it.
+    private bool HasArt => _level is { Background.Count: > 0 } && _tilesets.Any(t => t is not null);
+
+    private void DrawBackground(SpriteBatch batch)
+    {
+        if (_level is null)
+        {
+            return;
+        }
+
+        var terrain = _world.Terrain;
+        float left = _camCenterX - _viewW / 2f;
+
+        foreach (var tile in _level.Background)
+        {
+            if (tile.Tileset >= _tilesets.Length || _tilesets[tile.Tileset] is not { } texture)
+            {
+                continue;
+            }
+
+            if (tile.Y + tile.Height < _camY || tile.Y > _camY + _viewH)
+            {
+                continue;
+            }
+
+            // The world loops, so find where this tile appears nearest the camera.
+            float dx = terrain.WrapDelta(_camCenterX, tile.X + tile.Width / 2f) - tile.Width / 2f;
+            float x = _viewW / 2f + dx;
+            if (x + tile.Width < 0 || x > _viewW)
+            {
+                continue;
+            }
+
+            var set = _level.Tilesets[tile.Tileset];
+            int srcX = tile.TileIndex % set.Columns * set.TileWidth;
+            int srcY = tile.TileIndex / set.Columns * set.TileHeight;
+
+            var effects = SpriteEffects.None;
+            if (tile.FlipHorizontal)
+            {
+                effects |= SpriteEffects.FlipHorizontally;
+            }
+            if (tile.FlipVertical)
+            {
+                effects |= SpriteEffects.FlipVertically;
+            }
+
+            batch.Draw(
+                texture,
+                new Rectangle((int)MathF.Round(x), (int)MathF.Round(tile.Y - _camY), (int)tile.Width, (int)tile.Height),
+                new Rectangle(srcX, srcY, set.TileWidth, set.TileHeight),
+                Color.White,
+                0f,
+                new Vector2(0f, 0f),
+                effects,
+                0f);
+        }
+    }
+
+    /// <summary>Placeholder markers for spawn points until each unit has its own art and behaviour.</summary>
+    private void DrawUnitMarkers(SpriteBatch batch)
+    {
+        if (_level is null)
+        {
+            return;
+        }
+
+        foreach (var unit in _level.Units)
+        {
+            float x = ScreenX(unit.Position.X);
+            float y = ScreenY(unit.Position.Y);
+            if (x < -20 || x > _viewW + 20 || y < -20 || y > _viewH + 20)
+            {
+                continue;
+            }
+
+            var color = unit.Type switch
+            {
+                UnitType.Prison => Color.LimeGreen,
+                UnitType.FuelDump => Color.Cyan,
+                UnitType.Graviton or UnitType.Repulsor => Color.Magenta,
+                UnitType.Volcano => Color.Orange,
+                _ => Color.Red,
+            };
+            batch.Draw(_pixel, new Rectangle((int)x - 6, (int)y - 6, 12, 12), color);
+        }
     }
 
     private float ScreenX(float worldX) => _viewW / 2f + _world.Terrain.WrapDelta(_camCenterX, worldX);

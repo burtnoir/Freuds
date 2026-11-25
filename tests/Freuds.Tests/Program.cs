@@ -319,6 +319,57 @@ Console.WriteLine("Level settings");
     Check("another level can use a different gravity", Near(other.Config.Gravity, 200f));
 }
 
+Console.WriteLine("TileMap importer");
+{
+    string? dir = AppContext.BaseDirectory;
+    string? file = null;
+    while (dir is not null && file is null)
+    {
+        string candidate = Path.Combine(dir, "src", "Freuds.Game", "Levels", "rescue_example.json");
+        if (File.Exists(candidate)) file = candidate;
+        dir = Path.GetDirectoryName(dir);
+    }
+    Check("example map file is found", file is not null);
+    if (file is not null)
+    {
+        var level = TileMapImporter.ImportFile(file);
+        Check("level name comes from the map properties", level.Name == "Rescue_Example", level.Name);
+        Check("terrain is 96 by 32 cells of 32 px", level.Terrain.Columns == 96 && level.Terrain.Rows == 32 && level.Terrain.CellSize == 32, $"{level.Terrain.Columns}x{level.Terrain.Rows}x{level.Terrain.CellSize}");
+        Check("some terrain is solid", level.Terrain.HighestTerrainY < level.Terrain.HeightPx);
+        Check("player start is found and clear of terrain", !level.Terrain.CircleHits(level.PlayerStart, new GameConfig().ShipRadius), $"{level.PlayerStart.X},{level.PlayerStart.Y}");
+        var types = level.Units.Select(u => u.Type).ToHashSet();
+        Check("units are read from spawn points",
+            level.Units.Count == 5 && types.Contains(UnitType.Graviton) && types.Contains(UnitType.Launcher) && types.Contains(UnitType.Prison) && types.Contains(UnitType.FuelDump) && types.Contains(UnitType.FlyingTurret),
+            string.Join(",", types));
+        Check("old 'Flyer Spawn' name gives a warning", level.Warnings.Any(w => w.Contains("Flyer")));
+        Check("art tiles are imported", level.Background.Count == 1910, $"{level.Background.Count}");
+        Check("first tileset id is applied", level.Tilesets.Count == 1 && level.Tilesets[0].Columns == 84 && level.Background.All(t => t.TileIndex >= 0 && t.TileIndex < 84 * 84), $"{level.Tilesets.Count}");
+        Check("flip flags are decoded", level.Background.Count(t => t.FlipHorizontal) == 76 && level.Background.Count(t => t.FlipVertical) == 18 && level.Background.All(t => !t.FlipDiagonal),
+            $"h={level.Background.Count(t => t.FlipHorizontal)} v={level.Background.Count(t => t.FlipVertical)}");
+        Check("art is placed inside the map", level.Background.All(t => t.X >= 0 && t.Y >= 0 && t.X + t.Width <= level.Terrain.WidthPx + 0.5f && t.Y + t.Height <= level.Terrain.HeightPx + 0.5f));
+        Check("map with no Gravity property leaves settings unset", level.Settings is null);
+    }
+
+    string Minimal(string spawns, string extra = "", string collision = "[0,0,0,0]") =>
+        "{\"width\":2,\"height\":2,\"tilewidth\":16,\"tileheight\":16,\"tilesets\":[]," + extra +
+        "\"layers\":[{\"type\":\"tilelayer\",\"name\":\"Collision\",\"width\":2,\"height\":2,\"data\":" + collision + "}," +
+        "{\"type\":\"objectgroup\",\"name\":\"Spawn Points\",\"objects\":[" + spawns + "]}]}";
+    const string Player = "{\"name\":\"Player Spawn\",\"x\":8,\"y\":8}";
+
+    var small = TileMapImporter.Import(Minimal(Player + ",{\"name\":\"Gun Turret Spawn\",\"x\":1,\"y\":2,\"properties\":[{\"name\":\"Agression\",\"type\":\"int\",\"value\":3}]}",
+        "\"properties\":[{\"name\":\"Gravity\",\"type\":\"float\",\"value\":50}],"), "x");
+    Check("minimal map imports", small.Units.Count == 1 && small.Units[0].Type == UnitType.GunTurret);
+    Check("'Agression' is stored as Aggression", Near(small.Units[0].Setting("Aggression"), 3f));
+    Check("map Gravity property sets level settings", small.Settings is not null && Near(small.Settings.Gravity, 50f) && Near(small.Settings.ThrustAccel, new GameConfig().ThrustAccel));
+
+    static bool Throws(Action a) { try { a(); return false; } catch (LevelFormatException) { return true; } }
+    Check("missing player start is an error", Throws(() => TileMapImporter.Import(Minimal(""))));
+    Check("unknown spawn name is an error", Throws(() => TileMapImporter.Import(Minimal(Player + ",{\"name\":\"Banana Spawn\",\"x\":1,\"y\":1}"))));
+    Check("two player starts is an error", Throws(() => TileMapImporter.Import(Minimal(Player + "," + Player))));
+    Check("bad json is an error", Throws(() => TileMapImporter.Import("{nope")));
+    Check("wrong collision size is an error", Throws(() => TileMapImporter.Import(Minimal(Player, collision: "[0,0,0]"))));
+}
+
 Console.WriteLine();
 Console.WriteLine($"{passed} passed, {failures.Count} failed");
 foreach (var f in failures)
